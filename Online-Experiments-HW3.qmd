@@ -1,0 +1,231 @@
+---
+title: "STAT GR5293-006: Homework 3"
+author: "Becca Goldrup"
+date: "11/11/2026"
+format: html
+editor: visual
+---
+
+### Report
+
+#### 1.1
+
+P-values are piled up near 0, with \~29.2% of them below 0.05. The abundance of false positives demonstrates that the test is overconfident, an outcome due to the unit mismatch (randomizing by user and analyzing by impressions). The unit mismatch means the data points aren't independent, resulting in an underestimated variance and too many false positives.
+
+#### 1.2
+
+P-values have a roughly uniform spread, with some bin-to-bin noise expected with 1,000 simulations. Approximately 5.4% of p-values fall below .05, close to the 5% expected for a healthy metric.
+
+#### 1.3
+
+P-values have a roughly uniform spread, with some bin-to-bin noise expected with 1,000 simulations. Approximately 4.4% of p-values fall below .05, close to the 5% expected for a healthy metric.
+
+#### 1.4
+
+Simulations in 1.2 and 1.3 would pass, since both histograms demonstrate a roughly uniform shape, with the proportion of p-values below .05 near 5%. Simulation 1.1 would not pass, as it has p-values piled up near 0 (\~29.2% of them below 0.05), meaning it has an inflated false positive rate and is thus not usable. On the other hand, 1.2 and 1.3 pass because the delta method and user-level bootstrap both account for correlation between clicks from the same user.
+
+#### 2.1
+
+P-values have a roughly uniform spread, with some bin-to-bin noise expected with 1,000 simulations. Approximately 5.4% of p-values fall below .05, close to the 5% expected for a healthy metric.
+
+#### 2.2
+
+P-values have a roughly uniform spread, with some bin-to-bin noise expected with 1,000 simulations. Approximately 4.7% of p-values fall below .05, close to the 5% expected for a healthy metric.
+
+#### 2.3
+
+Both would pass, as they both have roughly uniform distributions and approximately 5% of their p-values fall below .05. Approach 1 works here because the double average addresses the unit mismatch, so both the randomization and analysis unit are at the user-level. Each user now contributes one independent observation, so variance is now valid.
+
+#### 2.4
+
+The difference between single and double average CTR is akin to the ratio of averages and average of ratios. With the single average CTR, we essentially take a ratio of averages (the total clicks divided by total impressions), which means power users dominate the metric. On the other hand, double average CTR takes the average of ratios (average of individual clicks / impressions), treating each user as an individual unit. This is evidenced by the higher value for the single average CTR (0.05088508) compared to the double average CTR (0.04293482), demonstrating how heavy users (users with higher CTRs than the typical user) pull the average up when it is weighted by impressions. The single average is useful when wanting to match business reports (total clicks over total impressions), but the unit mismatch inflates false positives if the variance is not corrected (with approaches like the delta method or bootstrapping). The double average is useful because it requires no correction, and reflects a typical user's experience more accurately when each user is weighted equally. Conversely, the double average means users with few impressions have noisy, extreme CTRs, but still count as much as heavy users.
+
+### Code
+
+#### Set-up
+
+```{r}
+# load packages
+library(tidyverse)
+library(ggplot2)
+library(dplyr)
+
+# set seed
+set.seed(123)
+
+# read in data
+df <- read.csv("homework3.csv")
+df <- df %>% 
+  mutate(user_ctr = clicks / impressions)
+
+# view data
+head(df)
+
+# group assignment
+group_assignment <- function(data) {
+  group_a_ids <- sample(data$X, nrow(data) / 2, replace = FALSE)
+  data <- data %>% 
+    mutate(
+      group = ifelse(X %in% group_a_ids, "A", "B")
+    )
+  return(data)
+}
+
+# p-value calculation
+compute_pval <- function(data) {
+  p_A <- data$p[data$group == "A"]
+  p_B <- data$p[data$group == "B"]
+  var_A <- data$variance[data$group == "A"]
+  var_B <- data$variance[data$group == "B"]
+  z_stat <- (p_A - p_B) / sqrt(var_A + var_B)
+  p_val <- 2 * pnorm(abs(z_stat), lower.tail = FALSE)
+  return(p_val)
+}
+
+# repeat simulation
+simulate_1000 <- function(AA_test, title) {
+  p_values <- replicate(1000, AA_test())
+  hist(p_values, main = title, breaks = 20)
+  mean(p_values < .05)
+}
+```
+
+#### 1.1
+
+```{r}
+# AA test with variance approach 1, single average
+AA_single_1 <- function() {
+  df <- group_assignment(df)
+  
+  group_data <- df %>%
+  group_by(group) %>%
+  summarise(
+    p = sum(clicks) / sum(impressions),
+    variance = (p * (1 - p)) / sum(impressions)        
+  )
+
+  p_val <- compute_pval(group_data)
+}
+
+# repeat simulation
+simulate_1000(AA_single_1, "Simulated AA p-values, single average, approach 1")
+```
+
+#### 1.2
+
+```{r}
+# AA test with variance approach 2, single average
+AA_single_2 <- function() {
+  df <- group_assignment(df)
+  
+  group_data <- df %>%
+    group_by(group) %>%
+    summarise(
+      N = n(),
+      avg_clicks = mean(clicks),
+      avg_impressions = mean(impressions),
+      p = avg_clicks / avg_impressions,
+      var_clicks = var(clicks),
+      var_impressions = var(impressions),
+      cov_clicks_impressions = cov(clicks, impressions),
+      variance = (1 / N) * (
+        (var_clicks / (avg_impressions^2)) + 
+          ((avg_clicks^2 * var_impressions) / (avg_impressions^4)) - 
+          (2 * avg_clicks * cov_clicks_impressions / (avg_impressions^3))
+      )
+    )
+    
+    p_val <- compute_pval(group_data)
+}
+
+# repeat simulation
+simulate_1000(AA_single_2, "Simulated AA p-values, single average, approach 2")
+```
+
+#### 1.3
+
+```{r}
+# bootstrapping
+boot_var_single <- function(clicks, impressions, B = 200) {
+  boot_ctrs <- replicate(B, {
+    idx <- sample(length(clicks), replace = TRUE) 
+    mean(clicks[idx]) / mean(impressions[idx])
+  })
+  var(boot_ctrs)
+}
+
+# AA test with variance approach 3, single average
+AA_single_3 <- function() {
+  df <- group_assignment(df)
+
+  group_data <- df %>%
+    group_by(group) %>%
+    summarise(
+      p = mean(clicks) / mean(impressions),
+      variance = boot_var_single(clicks, impressions)
+    )
+  p_val <- compute_pval(group_data)
+}
+
+# repeat simulation
+simulate_1000(AA_single_3, "Simulated AA p-values, single average, approach 3")   
+```
+
+#### 2.1
+
+```{r}
+# AA test with variance approach 1, double average
+AA_double_1 <- function() {
+  df <- group_assignment(df)
+  
+  group_data <- df %>%
+    group_by(group) %>%
+    summarise(
+      p = mean(user_ctr),
+      N = n(),
+      variance = var(user_ctr) / n()
+    )
+  
+  p_val <- compute_pval(group_data)
+}
+
+# repeat simulation
+simulate_1000(AA_double_1, "Simulated AA p-values, double average, approach 1")
+```
+
+#### 2.2
+
+```{r}
+# bootstrapping
+boot_var_double <- function(user_ctr, B = 200) {
+  boot_ctrs <- replicate(B, {
+    idx <- sample(length(user_ctr), replace = TRUE) 
+    mean(user_ctr[idx])
+  })
+  var(boot_ctrs)
+}
+
+# AA test with variance approach 3, double average
+AA_double_3 <- function() {
+  df <- group_assignment(df)
+  
+  group_data <- df %>%
+    group_by(group) %>%
+    summarise(
+      p = mean(user_ctr),
+      variance = boot_var_double(user_ctr)
+    )
+  
+  p_val <- compute_pval(group_data)
+}
+
+# repeat simulation
+simulate_1000(AA_double_3, "Simulated AA p-values, double average, approach 3")  
+```
+
+#### 2.4
+
+```{r}
+(single_average_ctr <- sum(df$clicks) / sum(df$impressions))
+(double_average_ctr <- mean(df$user_ctr))
+```
